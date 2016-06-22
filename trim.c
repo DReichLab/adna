@@ -595,13 +595,15 @@ int main(int argc, char *argv[])
 		fprintf(stderr, "Usage: seqtk mergepe <read1.fq> <read2.fq> | adna-trim [options] -\n");
 		fprintf(stderr, "Options:\n");
 		fprintf(stderr, "  -t INT     number of threads [%d]\n", g.opt.n_threads);
-		fprintf(stderr, "  -b INT     barcode length [%d]\n", g.opt.bc_len);
+//		fprintf(stderr, "  -b INT     barcode length [%d]\n", g.opt.bc_len);
 		fprintf(stderr, "  -l INT     min read/fragment length to output [%d]\n", g.opt.min_seq_len);
 		fprintf(stderr, "  -o INT     min overlap length [%d]\n", g.opt.min_ovlp_len);
 		fprintf(stderr, "  -p STR     output PE reads to STR.R[12].fq.gz [stdout]\n");
 		fprintf(stderr, "  -T         tabular output for debugging\n");
 		return 1;
 	}
+
+	// TODO: check the barcode length!!
 
 	fp = strcmp(argv[optind], "-")? gzopen(argv[optind], "r") : gzdopen(fileno(stdin), "r");
 	g.ks = kseq_init(fp);
