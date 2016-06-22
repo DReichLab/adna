@@ -14,12 +14,6 @@
 const char *lt_adapter1 = "AGATCGGAAGAGCACACGTCTGAACTCCAGTCAC"; // Illumina 3'-end adapter
 const char *lt_adapter2 = "AGATCGGAAGAGCGTCGTGTAGGGAAAGAGTGTAGATCTCGGTGGTCGCCGTATCATT";
 
-#define AD_MAX_BC_LEN 16
-#define AD_N_BARCODE 4
-
-const char *ad_barcode_for[2][AD_N_BARCODE] = { { "CTAGACA", "GACTCGC", "TCGAGTG", "AGTCTAT" }, { "CCTGCAG", "GGATGCT", "TTCATGA", "AAGCATC" } };
-const char *ad_barcode_rev[2][AD_N_BARCODE] = { { "TGTCTAG", "GCGAGTC", "CACTCGA", "ATAGACT" }, { "CTGCAGG", "AGCATCC", "TCATGAA", "GATGCTT" } };
-
 #define AD_MAX_TYPE 30
 
 enum ad_type_e {
@@ -41,7 +35,6 @@ typedef struct {
 	int max_qual;
 	int max_ovlp_pen, min_ovlp_len;
 	int max_adap_pen, min_adap_len;
-	int bc_len;
 	int tab_out;
 } lt_opt_t;
 
@@ -56,7 +49,6 @@ static void lt_opt_init(lt_opt_t *opt)
 	opt->min_ovlp_len = 10;
 	opt->max_adap_pen = 1;
 	opt->min_adap_len = 3;
-	opt->bc_len = 7;
 }
 
 /******************
@@ -309,29 +301,79 @@ bseq1_t *bseq_read(kseq_t *ks, int chunk_size, int *n_)
 	return seqs;
 }
 
+/****************
+ * Read barcode *
+ ****************/
+
+typedef struct {
+	int n[2], len[2];
+	lt_seqcloud_t **bc[2];
+	char **seq[2];
+} ad_barcode_t;
+
+typedef char *cstr_t;
+
+ad_barcode_t *ad_bc_read(const char *fn)
+{
+	gzFile fp;
+	kstream_t *ks;
+	kstring_t s = {0,0,0};
+	ad_barcode_t *bc = 0;
+	int dret, i, len[2];
+	kvec_t(cstr_t) x[2];
+
+	fp = gzopen(fn, "r");
+	if (fp == 0) return 0;
+	ks = ks_init(fp);
+	kv_init(x[0]); kv_init(x[1]);
+	len[0] = len[1] = 0;
+	while (ks_getuntil(ks, KS_SEP_LINE, &s, &dret) >= 0) {
+		int w;
+		for (i = 0; s.s[i]; ++i)
+			if (isspace(s.s[i])) break;
+		if (s.s[i] == 0 || s.s[i+1] == 0) continue;
+		if (s.s[i+1] == '1') w = 0;
+		else if (s.s[i+1] == '2') w = 1;
+		else continue;
+		s.s[i] = 0;
+		if (len[w] == 0) len[w] = i;
+		else if (len[w] != i) continue;
+		kv_push(cstr_t, x[w], strdup(s.s));
+	}
+	free(s.s);
+	ks_destroy(ks);
+	gzclose(fp);
+
+	fprintf(stderr, "[M::%s] read %ld read1 barcodes and %ld read2 barcodes\n", __func__, x[0].n, x[1].n);
+
+	bc = (ad_barcode_t*)calloc(1, sizeof(ad_barcode_t));
+	for (i = 0; i < 2; ++i) {
+		int j;
+		bc->n[i] = x[i].n, bc->len[i] = len[i];
+		bc->bc[i] = (lt_seqcloud_t**)calloc(bc->n[i], sizeof(lt_seqcloud_t*));
+		for (j = 0; j < x[i].n; ++j)
+			bc->bc[i][j] = lt_sc_gen(x[i].a[j]);
+		bc->seq[i] = x[i].a;
+	}
+	return bc;
+}
+
 /*********************************
  * Core trimming/merging routine *
  *********************************/
 
 typedef struct {
 	lt_opt_t opt;
-	lt_seqcloud_t *bc_for[2][AD_N_BARCODE], *bc_rev[2][AD_N_BARCODE];
 	kseq_t *ks;
 	gzFile fp_pe[2];
 	uint64_t types[AD_MAX_TYPE+1];
+	ad_barcode_t *bc;
 } lt_global_t;
 
 void lt_global_init(lt_global_t *g)
 {
-	int k, i;
 	memset(g, 0, sizeof(lt_global_t));
 	lt_opt_init(&g->opt);
-	for (k = 0; k < 2; ++k) {
-		for (i = 0; i < AD_N_BARCODE; ++i) {
-			g->bc_for[k][i] = lt_sc_gen(ad_barcode_for[k][i]);
-			g->bc_rev[k][i] = lt_sc_gen(ad_barcode_rev[k][i]);
-		}
-	}
 }
 
 #define MAX_BINDING_HITS 3
@@ -378,15 +420,14 @@ static inline void trim_adap(bseq1_t *s, const char *adap, int is_5, int min_len
 
 void lt_process(const lt_global_t *g, bseq1_t s[2])
 {
-	int i, k, mlen, olen[2], bc_id[2];
-	char *rseq, *rqual, *xseq, *xqual, *bc;
+	int i, k, mlen, bc_id[2];
+	char *rseq, *rqual, *xseq, *xqual;
 
 	mlen = s[0].l_seq > s[1].l_seq? s[0].l_seq : s[1].l_seq;
 	rseq = (char*)alloca(mlen + 1);
 	rqual = (char*)alloca(mlen + 1);
 	xseq = (char*)alloca(s[0].l_seq + s[1].l_seq + 1);
 	xqual = (char*)alloca(s[0].l_seq + s[1].l_seq + 1);
-	bc = (char*)alloca(mlen + 1);
 
 	// trim trailing N
 	for (k = 0; k < 2; ++k) {
@@ -395,72 +436,52 @@ void lt_process(const lt_global_t *g, bseq1_t s[2])
 			if (sk->seq[i] != 'N') break;
 		sk->l_seq = i + 1;
 		sk->seq[sk->l_seq] = sk->qual[sk->l_seq] = 0;
-		olen[k] = sk->l_seq;
 	}
 	// test barcode
-	for (k = 0; k < 2; ++k) {
-		char bc[AD_MAX_BC_LEN + 1];
-		lt_sc_hit_t hits[3];
-		strncpy(bc, s[k].seq, g->opt.bc_len);
-		bc[g->opt.bc_len] = 0;
-		for (i = 0; i < AD_N_BARCODE; ++i)
-			if (lt_sc_test(g->bc_for[k][i], bc, 3, hits))
-				break;
-		if (i == AD_N_BARCODE) break;
-		bc_id[k] = i;
-	}
-	if (k < 2) {
-		s[0].type = s[1].type = AD_NO_BARCODE;
-		return;
-	}
-	// write barcode
-	s->bc = (char*)calloc(g->opt.bc_len * 2 + 1, 1);
-	strncpy(s->bc, ad_barcode_for[0][bc_id[0]], g->opt.bc_len);
-	strncpy(s->bc + g->opt.bc_len, ad_barcode_for[1][bc_id[1]], g->opt.bc_len);
-	trim_bseq_5(&s[0], g->opt.bc_len);
-	trim_bseq_5(&s[1], g->opt.bc_len);
-	// trim Illumina PE adapters
-	olen[0] = s[0].l_seq, olen[1] = s[1].l_seq;
-	trim_adap(&s[0], lt_adapter1, 0, g->opt.min_adap_len, g->opt.max_adap_pen, 1);
-	trim_adap(&s[1], lt_adapter2, 0, g->opt.min_adap_len, g->opt.max_adap_pen, 1);
-	if (s[0].l_seq == olen[0] && s[1].l_seq == olen[1]) {
-		s[0].type = s[1].type = AD_NO_ADAP;
-	} else if (s[0].l_seq == s[1].l_seq && s[0].l_seq < olen[0] && s[1].l_seq < olen[1] && s->l_seq > g->opt.bc_len) {
+	if (g->bc && (g->bc->n[0] || g->bc->n[1])) {
+		char *bc;
+		bc = (char*)alloca(g->bc->len[0] + g->bc->len[1] + 1);
 		for (k = 0; k < 2; ++k) {
-			s[k].type = AD_COMPLETE_MERGE;
-			s[k].l_seq -= g->opt.bc_len;
-			s[k].seq[s[k].l_seq] = s[k].qual[s[k].l_seq] = 0;
+			lt_sc_hit_t hits[3];
+			strncpy(bc, s[k].seq, g->bc->len[k]);
+			bc[g->bc->len[k]] = 0;
+			for (i = 0; i < g->bc->n[k]; ++i)
+				if (lt_sc_test(g->bc->bc[k][i], bc, 3, hits))
+					break;
+			if (i == g->bc->n[k]) break;
+			bc_id[k] = i;
 		}
-		for (i = 0; i < s->l_seq; ++i) {
-			int j = s->l_seq - 1 - i;
-			int y, r = (uint8_t)s[1].seq[j] >= 128? 'N' : comp_tab[(uint8_t)s[1].seq[j]];
-			y = merge_base(g->opt.max_qual, s[0].seq[i], s[0].qual[i], r, s[1].qual[j]);
-			s->seq[i] = y & 0xff;
-			s->qual[i] = y >> 8;
+		if (k < 2) {
+			s[0].type = s[1].type = AD_NO_BARCODE;
+			return;
 		}
-		s[1].l_seq = 0;
-		if (s->l_seq < g->opt.min_seq_len) s[0].type = s[1].type = AD_SHORT_SE;
-	} else if (s[0].l_seq != s[1].l_seq || s[0].l_seq == olen[0] || s[1].l_seq == olen[1]) {
-		s[0].type = s[1].type = AD_MAL_ADAP;
+		// write barcode
+		strncpy(bc, g->bc->seq[0][bc_id[0]], g->bc->len[0]);
+		strncpy(bc + g->bc->len[0], g->bc->seq[1][bc_id[1]], g->bc->len[1]);
+		s->bc = strdup(bc);
+		if (g->bc->len[0]) trim_bseq_5(&s[0], g->bc->len[0]);
+		if (g->bc->len[1]) trim_bseq_5(&s[1], g->bc->len[1]);
 	}
 	// find end overlaps
-	if (s->type == AD_NO_ADAP) {
-		int n_fh;
-		uint64_t fh[2];
+	{
+		int n_fh, n_rh, n_ch;
+		uint64_t fh[2], rh[2], ch[2];
 		// reverse the other read
 		lt_seq_revcomp(s[1].l_seq, s[1].seq, rseq);
 		lt_seq_rev(s[1].l_seq, s[1].qual, rqual);
 		// find overlaps
 		n_fh = lt_ue_for(s[0].l_seq, &s[0].seq[0], &s[0].qual[0], s[1].l_seq, rseq, rqual, g->opt.max_ovlp_pen, g->opt.min_ovlp_len, 2, fh);
-		if (n_fh > 1) {
+		n_rh = lt_ue_rev(s[0].l_seq, &s[0].seq[0], &s[0].qual[0], s[1].l_seq, rseq, rqual, g->opt.max_ovlp_pen, g->opt.min_ovlp_len, 2, rh);
+		n_ch = lt_ue_contained(s[0].l_seq, &s[0].seq[0], &s[0].qual[0], s[1].l_seq, rseq, rqual, g->opt.max_ovlp_pen, 2, ch);
+		if (n_fh + n_rh + n_ch > 1) {
 			s[0].type = s[1].type = AD_AMBI_MERGE;
-		} else if (n_fh == 0) {
+		} else if (n_fh + n_rh + n_ch == 0) {
 			s[0].type = s[1].type = AD_NO_MERGE;
 		} else {
 			int x = 0;
-			s[0].type = s[1].type = AD_PARTIAL_MERGE;
 			if (n_fh == 1) {
 				int l = (uint32_t)fh[0], st = fh[0]>>32;
+				s[0].type = s[1].type = AD_PARTIAL_MERGE;
 				for (i = 0; i < st; ++i)
 					xseq[x] = s[0].seq[i], xqual[x++] = s[0].qual[i];
 				for (i = 0; i < l; ++i) {
@@ -475,6 +496,24 @@ void lt_process(const lt_global_t *g, bseq1_t s[2])
 					for (i = l; i < s[0].l_seq; ++i)
 						xseq[x] = s[0].seq[i], xqual[x++] = s[0].qual[i];
 				}
+			} else if (n_rh == 1) {
+				int l = (uint32_t)rh[0], st = rh[0]>>32;
+				s[0].type = s[1].type = AD_COMPLETE_MERGE;
+				for (i = 0; i < s[0].l_seq - st - l; ++i)
+					xseq[x] = s[0].seq[i], xqual[x++] = s[0].qual[i];
+				for (i = s[1].l_seq - l; i < s[1].l_seq; ++i) {
+					int j = i - s[1].l_seq + (s[0].l_seq - st), y;
+					y = merge_base(g->opt.max_qual, s[0].seq[j], s[0].qual[j], rseq[i], rqual[i]);
+					xseq[x] = (uint8_t)y, xqual[x++] = y>>8;
+				}
+			} else {
+				int j, st = ch[0]>>32;
+				s[0].type = s[1].type = AD_COMPLETE_MERGE;
+				for (j = 0; j < s[0].l_seq; ++j) {
+					int i = j + st, y;
+					y = merge_base(g->opt.max_qual, s[0].seq[j], s[0].qual[j], rseq[i], rqual[i]);
+					xseq[x] = (uint8_t)y, xqual[x++] = y>>8;
+				}
 			}
 			xseq[x] = xqual[x] = 0;
 			if (x < g->opt.min_seq_len) s[0].type = s[1].type = AD_SHORT_SE;
@@ -485,8 +524,12 @@ void lt_process(const lt_global_t *g, bseq1_t s[2])
 			s[1].l_seq = 0;
 		}
 	}
-	if (s->type == AD_NO_MERGE || s->type == AD_AMBI_MERGE)
-		s[1].bc = strdup(s->bc);
+	if (s->type == AD_NO_MERGE || s->type == AD_AMBI_MERGE) {
+		if (s->bc) s[1].bc = strdup(s->bc);
+		// trim Illumina PE adapters
+		trim_adap(&s[0], lt_adapter1, 0, g->opt.min_adap_len, g->opt.max_adap_pen, 1);
+		trim_adap(&s[1], lt_adapter2, 0, g->opt.min_adap_len, g->opt.max_adap_pen, 1);
+	}
 }
 
 /**********************
@@ -540,16 +583,16 @@ static void *worker_pipeline(void *shared, int step, void *_data)
 				if (s->l_seq <= 0) continue;
 				if (g->fp_pe[0] && g->fp_pe[1]) {
 					if (s->type == AD_PARTIAL_MERGE || s->type == AD_COMPLETE_MERGE) {
-						printf("%c%s:%d:%s\n%s\n", s->qual? '@' : '>', s->name, s->type, s->bc, s->seq);
+						printf("%c%s_%d:%s\n%s\n", s->qual? '@' : '>', s->name, s->type, s->bc? s->bc : "*", s->seq);
 						if (s->qual) { puts("+"); puts(s->qual); }
 					} else if (s->type == AD_NO_MERGE || s->type == AD_AMBI_MERGE) {
 						kstring_t *str = &pe[i&1];
-						ksprintf(str, "%c%s:%d:%s\n%s\n", s->qual? '@' : '>', s->name, s->type, s->bc, s->seq);
+						ksprintf(str, "%c%s_%d:%s\n%s\n", s->qual? '@' : '>', s->name, s->type, s->bc? s->bc : "*", s->seq);
 						if (s->qual) { kputs("+\n", str); kputs(s->qual, str); kputc('\n', str); }
 					}
 				} else {
 					if (s->type == AD_PARTIAL_MERGE || s->type == AD_COMPLETE_MERGE || s->type == AD_NO_MERGE || s->type == AD_AMBI_MERGE) {
-						printf("%c%s:%d:%s", s->qual? '@' : '>', s->name, s->type, s->bc);
+						printf("%c%s_%d:%s", s->qual? '@' : '>', s->name, s->type, s->bc? s->bc : "*");
 						if (s->type != AD_PARTIAL_MERGE && s->type != AD_COMPLETE_MERGE) {
 							putchar('/'); putchar("12"[i&1]);
 						}
@@ -580,22 +623,22 @@ int main(int argc, char *argv[])
 	int c;
 	lt_global_t g;
 	gzFile fp;
-	char *pe_prefix = 0;
+	char *pe_prefix = 0, *fn_bc = 0;
 
 	lt_global_init(&g);
 	while ((c = getopt(argc, argv, "Tt:b:l:o:p:")) >= 0) {
 		if (c == 't') g.opt.n_threads = atoi(optarg);
 		else if (c == 'T') g.opt.tab_out = 1;
-		else if (c == 'b') g.opt.bc_len = atoi(optarg);
 		else if (c == 'l') g.opt.min_seq_len = atoi(optarg);
 		else if (c == 'o') g.opt.min_ovlp_len = atoi(optarg);
 		else if (c == 'p') pe_prefix = optarg;
+		else if (c == 'b') fn_bc = optarg;
 	}
 	if (argc - optind < 1) {
 		fprintf(stderr, "Usage: seqtk mergepe <read1.fq> <read2.fq> | adna-trim [options] -\n");
 		fprintf(stderr, "Options:\n");
+		fprintf(stderr, "  -b FILE    barcode file []\n");
 		fprintf(stderr, "  -t INT     number of threads [%d]\n", g.opt.n_threads);
-//		fprintf(stderr, "  -b INT     barcode length [%d]\n", g.opt.bc_len);
 		fprintf(stderr, "  -l INT     min read/fragment length to output [%d]\n", g.opt.min_seq_len);
 		fprintf(stderr, "  -o INT     min overlap length [%d]\n", g.opt.min_ovlp_len);
 		fprintf(stderr, "  -p STR     output PE reads to STR.R[12].fq.gz [stdout]\n");
@@ -603,10 +646,9 @@ int main(int argc, char *argv[])
 		return 1;
 	}
 
-	// TODO: check the barcode length!!
-
 	fp = strcmp(argv[optind], "-")? gzopen(argv[optind], "r") : gzdopen(fileno(stdin), "r");
 	g.ks = kseq_init(fp);
+	if (fn_bc) g.bc = ad_bc_read(fn_bc);
 	if (pe_prefix) {
 		kstring_t str = {0,0,0};
 		for (c = 0; c < 2; ++c) {
