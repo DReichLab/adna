@@ -18,3 +18,5 @@ depend:
 		(LC_ALL=C; export LC_ALL; makedepend -Y -- $(CFLAGS) $(DFLAGS) -- *.c)
 
 # DO NOT DELETE
+
+trim.o: kvec.h kstring.h khash.h kseq.h
