@@ -18,10 +18,8 @@ const char *lt_adapter2 = "AGATCGGAAGAGCGTCGTGTAGGGAAAGAGTGTAGATCTCGGTGGTCGCCGTA
 
 enum ad_type_e {
 	AD_UNKNOWN = 0,
-	AD_NO_BARCODE = 1,
-	AD_MAL_ADAP = 2,
-	AD_NO_ADAP = 3,
-	AD_SHORT_SE = 11,
+	AD_NO_BARCODE = 11,
+	AD_SHORT_SE = 12,
 	AD_COMPLETE_MERGE = 21,
 	AD_PARTIAL_MERGE = 22,
 	AD_AMBI_MERGE = 23,
@@ -35,6 +33,7 @@ typedef struct {
 	int max_qual;
 	int max_ovlp_pen, min_ovlp_len;
 	int max_adap_pen, min_adap_len;
+	int bc_len[2];
 	int tab_out;
 } lt_opt_t;
 
@@ -49,6 +48,7 @@ static void lt_opt_init(lt_opt_t *opt)
 	opt->min_ovlp_len = 10;
 	opt->max_adap_pen = 1;
 	opt->min_adap_len = 3;
+	opt->bc_len[0] = opt->bc_len[1] = 7;
 }
 
 /******************
@@ -438,7 +438,7 @@ void lt_process(const lt_global_t *g, bseq1_t s[2])
 		sk->seq[sk->l_seq] = sk->qual[sk->l_seq] = 0;
 	}
 	// test barcode
-	if (g->bc && (g->bc->n[0] || g->bc->n[1])) {
+	if (g->bc && g->bc->n[0] + g->bc->n[1] > 0) {
 		char *bc;
 		bc = (char*)alloca(g->bc->len[0] + g->bc->len[1] + 1);
 		for (k = 0; k < 2; ++k) {
@@ -458,9 +458,19 @@ void lt_process(const lt_global_t *g, bseq1_t s[2])
 		// write barcode
 		strncpy(bc, g->bc->seq[0][bc_id[0]], g->bc->len[0]);
 		strncpy(bc + g->bc->len[0], g->bc->seq[1][bc_id[1]], g->bc->len[1]);
+		bc[g->bc->len[0] + g->bc->len[1]] = 0;
 		s->bc = strdup(bc);
 		if (g->bc->len[0]) trim_bseq_5(&s[0], g->bc->len[0]);
 		if (g->bc->len[1]) trim_bseq_5(&s[1], g->bc->len[1]);
+	} else if (g->opt.bc_len[0] + g->opt.bc_len[1] > 0) {
+		char *bc;
+		bc = (char*)alloca(g->opt.bc_len[0] + g->opt.bc_len[1] + 1);
+		strncpy(bc, s[0].seq, g->opt.bc_len[0]);
+		strncpy(bc + g->opt.bc_len[0], s[1].seq, g->opt.bc_len[1]);
+		bc[g->opt.bc_len[0] + g->opt.bc_len[1]] = 0;
+		s->bc = strdup(bc);
+		if (g->opt.bc_len[0]) trim_bseq_5(&s[0], g->opt.bc_len[0]);
+		if (g->opt.bc_len[1]) trim_bseq_5(&s[1], g->opt.bc_len[1]);
 	}
 	// find end overlaps
 	{
@@ -626,29 +636,35 @@ int main(int argc, char *argv[])
 	char *pe_prefix = 0, *fn_bc = 0;
 
 	lt_global_init(&g);
-	while ((c = getopt(argc, argv, "Tt:b:l:o:p:")) >= 0) {
+	while ((c = getopt(argc, argv, "Tt:b:l:o:p:B:")) >= 0) {
 		if (c == 't') g.opt.n_threads = atoi(optarg);
 		else if (c == 'T') g.opt.tab_out = 1;
 		else if (c == 'l') g.opt.min_seq_len = atoi(optarg);
 		else if (c == 'o') g.opt.min_ovlp_len = atoi(optarg);
 		else if (c == 'p') pe_prefix = optarg;
 		else if (c == 'b') fn_bc = optarg;
+		else if (c == 'B') {
+			char *p;
+			g.opt.bc_len[0] = g.opt.bc_len[1] = strtol(optarg, &p, 10);
+			if (*p == ',') g.opt.bc_len[1] = strtol(p+1, &p, 10);
+		}
 	}
 	if (argc - optind < 1) {
 		fprintf(stderr, "Usage: seqtk mergepe <read1.fq> <read2.fq> | adna-trim [options] -\n");
 		fprintf(stderr, "Options:\n");
-		fprintf(stderr, "  -b FILE    barcode file []\n");
-		fprintf(stderr, "  -t INT     number of threads [%d]\n", g.opt.n_threads);
-		fprintf(stderr, "  -l INT     min read/fragment length to output [%d]\n", g.opt.min_seq_len);
-		fprintf(stderr, "  -o INT     min overlap length [%d]\n", g.opt.min_ovlp_len);
-		fprintf(stderr, "  -p STR     output PE reads to STR.R[12].fq.gz [stdout]\n");
-		fprintf(stderr, "  -T         tabular output for debugging\n");
+		fprintf(stderr, "  -b FILE      barcode file (overriding -B) []\n");
+		fprintf(stderr, "  -B INT[,INT] barcode length [%d,%d]\n", g.opt.bc_len[0], g.opt.bc_len[1]);
+		fprintf(stderr, "  -t INT       number of threads [%d]\n", g.opt.n_threads);
+		fprintf(stderr, "  -l INT       min read/fragment length to output [%d]\n", g.opt.min_seq_len);
+		fprintf(stderr, "  -o INT       min overlap length [%d]\n", g.opt.min_ovlp_len);
+		fprintf(stderr, "  -p STR       output PE reads to STR.R[12].fq.gz [stdout]\n");
+		fprintf(stderr, "  -T           tabular output for debugging\n");
 		return 1;
 	}
 
 	fp = strcmp(argv[optind], "-")? gzopen(argv[optind], "r") : gzdopen(fileno(stdin), "r");
 	g.ks = kseq_init(fp);
-	if (fn_bc) g.bc = ad_bc_read(fn_bc);
+	if (fn_bc) g.bc = ad_bc_read(fn_bc), g.opt.bc_len[0] = g.opt.bc_len[1] = 0;
 	if (pe_prefix) {
 		kstring_t str = {0,0,0};
 		for (c = 0; c < 2; ++c) {
