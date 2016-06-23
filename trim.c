@@ -20,6 +20,7 @@ enum ad_type_e {
 	AD_UNKNOWN = 0,
 	AD_NO_BARCODE = 11,
 	AD_SHORT_SE = 12,
+	AD_SHORT_PE = 13,
 	AD_COMPLETE_MERGE = 21,
 	AD_PARTIAL_MERGE = 22,
 	AD_AMBI_MERGE = 31,
@@ -541,6 +542,8 @@ void lt_process(const lt_global_t *g, bseq1_t s[2])
 		// trim Illumina PE adapters
 		trim_adap(&s[0], lt_adapter1, 0, g->opt.min_adap_len, g->opt.max_adap_pen, 1);
 		trim_adap(&s[1], lt_adapter2, 0, g->opt.min_adap_len, g->opt.max_adap_pen, 1);
+		if (s[0].l_seq < g->opt.min_seq_len || s[1].l_seq < g->opt.min_seq_len)
+			s[0].type = s[1].type = AD_SHORT_PE;
 	}
 	if (g->opt.trim_len) {
 		if (s->type == AD_PARTIAL_MERGE || s->type == AD_COMPLETE_MERGE) {
