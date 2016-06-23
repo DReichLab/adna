@@ -1,7 +1,12 @@
 #include <zlib.h>
 #include <stdio.h>
+#include <ctype.h>
 #include <stdlib.h>
 #include "sam.h"
+
+#define AD_NO_BC    0
+#define AD_USE_BC   1
+#define AD_USE_NAME 2
 
 typedef struct {
 	bam1_t *b;
@@ -26,7 +31,7 @@ static inline uint64_t X31_hash_string(const char *s)
 	return h;
 }
 
-static khash_t(64) *process(kdq_t(elem_t) *q, BGZF *fp, khash_t(s) *marked, khash_t(64) *aux)
+static khash_t(64) *process(kdq_t(elem_t) *q, BGZF *fp, khash_t(s) *marked, khash_t(64) *aux, int bc_type)
 {
 	int i, absent;
 	if (kh_n_buckets(aux) < kdq_size(q) * 4 && kh_n_buckets(aux) <= AUX_REALLOC_SIZE) {
@@ -54,16 +59,27 @@ static khash_t(64) *process(kdq_t(elem_t) *q, BGZF *fp, khash_t(s) *marked, khas
 			e->is_pe = e->full_ovlp = 0;
 		}
 		if (e->is_left) {
-			const uint8_t *BC = 0;
 			uint64_t key;
 			khint_t k;
-			BC = bam_aux_get(b, "BC");
-			if (BC) ++lt_n_frags_BC;
-			else ++lt_n_frags_noBC;
-			key = BC? X31_hash_string(bam_aux2Z(BC)) : 0;
+			int has_BC;
+			if (bc_type == AD_USE_BC) {
+				const uint8_t *BC = 0;
+				BC = bam_aux_get(b, "BC");
+				has_BC = BC? 1 : 0;
+				key = has_BC? X31_hash_string(bam_aux2Z(BC)) : 0;
+			} else if (bc_type == AD_USE_NAME) {
+				const char *p, *qname = bam_get_qname(b);
+				int len;
+				len = strlen(qname);
+				for (p = qname + len - 1; p >= qname && !ispunct(*p); --p);
+				has_BC = p > qname? 1 : 0;
+				key = has_BC? X31_hash_string(p + 1) : 0;
+			} else key = 0, has_BC = 0;
 			k = kh_put(64, aux, key, &absent);
+			if (has_BC) ++lt_n_frags_BC;
+			else ++lt_n_frags_noBC;
 			if (!absent) {
-				if (BC) ++lt_n_dups_BC;
+				if (has_BC) ++lt_n_dups_BC;
 				else ++lt_n_dups_noBC;
 				b->core.flag |= BAM_FDUP;
 				if (e->is_pe) kh_put(s, marked, strdup(qname), &absent);
@@ -95,7 +111,7 @@ static khash_t(64) *process(kdq_t(elem_t) *q, BGZF *fp, khash_t(s) *marked, khas
 
 int main(int argc, char *argv[])
 {
-	int c, clevel = -1, ret;
+	int c, clevel = -1, ret, bc_type = AD_USE_NAME;
 	int last_tid = -1, last_pos = -1;
 	BGZF *fpr, *fpw;
 	bam_hdr_t *h;
@@ -105,13 +121,17 @@ int main(int argc, char *argv[])
 	kdq_t(elem_t) *q;
 	khint_t k;
 
-	while ((c = getopt(argc, argv, "l:")) >= 0) {
+	while ((c = getopt(argc, argv, "l:TB")) >= 0) {
 		if (c == 'l') clevel = atoi(optarg);
+		else if (c == 'T') bc_type = AD_USE_BC;
+		else if (c == 'B') bc_type = AD_NO_BC;
 	}
 	if (optind == argc) {
 		fprintf(stderr, "Usage: adna-ldup [options] <aln.bam>\n");
 		fprintf(stderr, "Options:\n");
 		fprintf(stderr, "  -l INT    zlib compression level [zlib default]\n");
+		fprintf(stderr, "  -T        acquire barcode from BC tag [from read name]\n");
+		fprintf(stderr, "  -B        ignore barcode\n");
 		return 1;
 	}
 
@@ -134,14 +154,14 @@ int main(int argc, char *argv[])
 		b->core.flag &= ~BAM_FDUP;
 		if (b->core.tid != last_tid || b->core.pos != last_pos) {
 			if (last_tid >= 0 && last_pos >= 0)
-				aux = process(q, fpw, marked, aux);
+				aux = process(q, fpw, marked, aux, bc_type);
 			last_tid = b->core.tid, last_pos = b->core.pos;
 		}
 		e = kdq_pushp(elem_t, q);
 		e->b = bam_init1();
 		bam_copy1(e->b, b);
 	}
-	aux = process(q, fpw, marked, aux);
+	aux = process(q, fpw, marked, aux, bc_type);
 	if (ret >= 0) {
 		do {
 			bam_write1(fpw, b);
