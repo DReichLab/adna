@@ -14,7 +14,7 @@
 const char *lt_adapter1 = "AGATCGGAAGAGCACACGTCTGAACTCCAGTCAC"; // Illumina 3'-end adapter
 const char *lt_adapter2 = "AGATCGGAAGAGCGTCGTGTAGGGAAAGAGTGTAGATCTCGGTGGTCGCCGTATCATT";
 
-#define AD_MAX_TYPE 30
+#define AD_MAX_TYPE 40
 
 enum ad_type_e {
 	AD_UNKNOWN = 0,
@@ -22,8 +22,8 @@ enum ad_type_e {
 	AD_SHORT_SE = 12,
 	AD_COMPLETE_MERGE = 21,
 	AD_PARTIAL_MERGE = 22,
-	AD_AMBI_MERGE = 23,
-	AD_NO_MERGE = 24
+	AD_AMBI_MERGE = 31,
+	AD_NO_MERGE = 32
 };
 
 typedef struct {
@@ -34,6 +34,7 @@ typedef struct {
 	int max_ovlp_pen, min_ovlp_len;
 	int max_adap_pen, min_adap_len;
 	int bc_len[2];
+	int trim_len;
 	int tab_out;
 } lt_opt_t;
 
@@ -44,11 +45,12 @@ static void lt_opt_init(lt_opt_t *opt)
 	opt->chunk_size = 10000000;
 	opt->max_qual = 50;
 	opt->min_seq_len = 30;
-	opt->max_ovlp_pen = 2;
+	opt->max_ovlp_pen = 3;
 	opt->min_ovlp_len = 10;
-	opt->max_adap_pen = 1;
-	opt->min_adap_len = 3;
+	opt->max_adap_pen = 2;
+	opt->min_adap_len = 5;
 	opt->bc_len[0] = opt->bc_len[1] = 7;
+	opt->trim_len = 0;
 }
 
 /******************
@@ -272,7 +274,7 @@ KSEQ_INIT(gzFile, gzread)
 typedef struct {
 	uint32_t l_seq:31, dbl_bind:1;
 	enum ad_type_e type;
-	char *name, *seq, *qual, *bc;
+	char *name, *seq, *qual, *bc, *trim;
 } bseq1_t;
 
 bseq1_t *bseq_read(kseq_t *ks, int chunk_size, int *n_)
@@ -540,6 +542,16 @@ void lt_process(const lt_global_t *g, bseq1_t s[2])
 		trim_adap(&s[0], lt_adapter1, 0, g->opt.min_adap_len, g->opt.max_adap_pen, 1);
 		trim_adap(&s[1], lt_adapter2, 0, g->opt.min_adap_len, g->opt.max_adap_pen, 1);
 	}
+	if (g->opt.trim_len) {
+		if (s->type == AD_PARTIAL_MERGE || s->type == AD_COMPLETE_MERGE) {
+			s->l_seq -= g->opt.trim_len;
+			s->seq[s->l_seq] = s->qual[s->l_seq] = 0;
+			trim_bseq_5(s, g->opt.trim_len);
+		} else if (s->type == AD_NO_MERGE || s->type == AD_AMBI_MERGE) {
+			trim_bseq_5(&s[0], g->opt.trim_len);
+			trim_bseq_5(&s[1], g->opt.trim_len);
+		}
+	}
 }
 
 /**********************
@@ -633,18 +645,18 @@ int main(int argc, char *argv[])
 	int c;
 	lt_global_t g;
 	gzFile fp;
-	char *pe_prefix = 0, *fn_bc = 0;
+	char *p, *pe_prefix = 0, *fn_bc = 0;
 
 	lt_global_init(&g);
-	while ((c = getopt(argc, argv, "Tt:b:l:o:p:B:")) >= 0) {
+	while ((c = getopt(argc, argv, "dt:b:l:o:p:B:T:")) >= 0) {
 		if (c == 't') g.opt.n_threads = atoi(optarg);
-		else if (c == 'T') g.opt.tab_out = 1;
+		else if (c == 'd') g.opt.tab_out = 1;
 		else if (c == 'l') g.opt.min_seq_len = atoi(optarg);
 		else if (c == 'o') g.opt.min_ovlp_len = atoi(optarg);
 		else if (c == 'p') pe_prefix = optarg;
 		else if (c == 'b') fn_bc = optarg;
+		else if (c == 'T') g.opt.trim_len = atoi(optarg);
 		else if (c == 'B') {
-			char *p;
 			g.opt.bc_len[0] = g.opt.bc_len[1] = strtol(optarg, &p, 10);
 			if (*p == ',') g.opt.bc_len[1] = strtol(p+1, &p, 10);
 		}
@@ -658,7 +670,8 @@ int main(int argc, char *argv[])
 		fprintf(stderr, "  -l INT       min read/fragment length to output [%d]\n", g.opt.min_seq_len);
 		fprintf(stderr, "  -o INT       min overlap length [%d]\n", g.opt.min_ovlp_len);
 		fprintf(stderr, "  -p STR       output PE reads to STR.R[12].fq.gz [stdout]\n");
-		fprintf(stderr, "  -T           tabular output for debugging\n");
+		fprintf(stderr, "  -T INT       trim INT-bp [%d]\n", g.opt.trim_len);
+		fprintf(stderr, "  -d           tabular output for debugging\n");
 		return 1;
 	}
 
