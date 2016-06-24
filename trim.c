@@ -50,7 +50,7 @@ static void lt_opt_init(lt_opt_t *opt)
 	opt->min_ovlp_len = 10;
 	opt->max_adap_pen = 2;
 	opt->min_adap_len = 5;
-	opt->bc_len[0] = opt->bc_len[1] = 7;
+	opt->bc_len[0] = opt->bc_len[1] = 0;
 	opt->trim_len = 0;
 }
 
