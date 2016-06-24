@@ -111,7 +111,7 @@ static khash_t(64) *process(kdq_t(elem_t) *q, BGZF *fp, khash_t(s) *marked, khas
 
 int main(int argc, char *argv[])
 {
-	int c, clevel = -1, ret, bc_type = AD_USE_NAME;
+	int c, clevel = -1, ret, bc_type = AD_USE_NAME, drop_unmapped = 0;
 	int last_tid = -1, last_pos = -1;
 	BGZF *fpr, *fpw;
 	bam_hdr_t *h;
@@ -121,10 +121,11 @@ int main(int argc, char *argv[])
 	kdq_t(elem_t) *q;
 	khint_t k;
 
-	while ((c = getopt(argc, argv, "l:TB")) >= 0) {
+	while ((c = getopt(argc, argv, "l:TBD")) >= 0) {
 		if (c == 'l') clevel = atoi(optarg);
 		else if (c == 'T') bc_type = AD_USE_BC;
 		else if (c == 'B') bc_type = AD_NO_BC;
+		else if (c == 'D') drop_unmapped = 1;
 	}
 	if (optind == argc) {
 		fprintf(stderr, "Usage: adna-ldup [options] <aln.bam>\n");
@@ -132,6 +133,7 @@ int main(int argc, char *argv[])
 		fprintf(stderr, "  -l INT    zlib compression level [zlib default]\n");
 		fprintf(stderr, "  -T        acquire barcode from BC tag [from read name]\n");
 		fprintf(stderr, "  -B        ignore barcode\n");
+		fprintf(stderr, "  -D        drop reads without mapping coordinates\n");
 		return 1;
 	}
 
@@ -163,7 +165,7 @@ int main(int argc, char *argv[])
 		bam_copy1(e->b, b);
 	}
 	aux = process(q, fpw, marked, aux, bc_type);
-	if (ret >= 0) {
+	if (ret >= 0 && !drop_unmapped) {
 		do {
 			bam_write1(fpw, b);
 		} while (bam_read1(fpr, b) >= 0);
