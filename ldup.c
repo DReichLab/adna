@@ -10,7 +10,7 @@
 
 typedef struct {
 	bam1_t *b;
-	uint8_t is_pe, is_left, full_ovlp;
+	uint8_t is_pe, is_left;
 } elem_t;
 
 #include "kdq.h"
@@ -46,22 +46,17 @@ static khash_t(64) *process(kdq_t(elem_t) *q, BGZF *fp, khash_t(s) *marked, khas
 		char *qname = bam_get_qname(b);
 		if (b->core.flag&0x800) continue;
 		if ((b->core.flag&1) && (b->core.flag&(BAM_FREAD1|BAM_FREAD2))) { // PE
-			e->is_pe = 1;
-			e->full_ovlp = (b->core.tid == b->core.mtid && b->core.pos == b->core.mpos);
-			e->is_left = 0;
+			e->is_left = 0, e->is_pe = 1;
 			if (b->core.tid < b->core.mtid) e->is_left = 1;
 			else if (b->core.tid == b->core.mtid) {
 				if (b->core.pos < b->core.mpos) e->is_left = 1;
 				else if (b->core.pos == b->core.mpos && (b->core.flag&BAM_FREAD1)) e->is_left = 1;
 			}
-		} else { // SE
-			e->is_left = 1;
-			e->is_pe = e->full_ovlp = 0;
-		}
+		} else e->is_left = 1, e->is_pe = 0; // SE
 		if (e->is_left) {
 			uint64_t key;
 			khint_t k;
-			int has_BC;
+			int has_BC, rlen;
 			if (bc_type == AD_USE_BC) {
 				const uint8_t *BC = 0;
 				BC = bam_aux_get(b, "BC");
@@ -75,6 +70,9 @@ static khash_t(64) *process(kdq_t(elem_t) *q, BGZF *fp, khash_t(s) *marked, khas
 				has_BC = p > qname? 1 : 0;
 				key = has_BC? X31_hash_string(p + 1) : 0;
 			} else key = 0, has_BC = 0;
+			if (!e->is_pe) rlen = bam_cigar2rlen(b->core.n_cigar, bam_get_cigar(b));
+			else rlen = b->core.isize > 0? b->core.isize : -b->core.isize;
+			key ^= __ac_Wang_hash(rlen);
 			k = kh_put(64, aux, key, &absent);
 			if (has_BC) ++lt_n_frags_BC;
 			else ++lt_n_frags_noBC;
