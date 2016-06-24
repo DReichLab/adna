@@ -36,7 +36,7 @@ typedef struct {
 	int max_adap_pen, min_adap_len;
 	int bc_len[2];
 	int trim_len;
-	int tab_out;
+	int tab_out, retain_pe;
 } lt_opt_t;
 
 static void lt_opt_init(lt_opt_t *opt)
@@ -617,6 +617,7 @@ static void *worker_pipeline(void *shared, int step, void *_data)
 					}
 				} else {
 					if (s->type == AD_PARTIAL_MERGE || s->type == AD_COMPLETE_MERGE || s->type == AD_NO_MERGE || s->type == AD_AMBI_MERGE) {
+						if (!g->opt.retain_pe && (s->type == AD_NO_MERGE || s->type == AD_AMBI_MERGE)) continue;
 						printf("%c%s_%d:%s", s->qual? '@' : '>', s->name, s->type, s->bc? s->bc : "*");
 						if (s->type != AD_PARTIAL_MERGE && s->type != AD_COMPLETE_MERGE) {
 							putchar('/'); putchar("12"[i&1]);
@@ -651,9 +652,10 @@ int main(int argc, char *argv[])
 	char *p, *pe_prefix = 0, *fn_bc = 0;
 
 	lt_global_init(&g);
-	while ((c = getopt(argc, argv, "dt:b:l:o:p:B:T:")) >= 0) {
+	while ((c = getopt(argc, argv, "dt:b:l:o:p:B:T:P")) >= 0) {
 		if (c == 't') g.opt.n_threads = atoi(optarg);
 		else if (c == 'd') g.opt.tab_out = 1;
+		else if (c == 'P') g.opt.retain_pe = 1;
 		else if (c == 'l') g.opt.min_seq_len = atoi(optarg);
 		else if (c == 'o') g.opt.min_ovlp_len = atoi(optarg);
 		else if (c == 'p') pe_prefix = optarg;
@@ -672,8 +674,9 @@ int main(int argc, char *argv[])
 		fprintf(stderr, "  -t INT       number of threads [%d]\n", g.opt.n_threads);
 		fprintf(stderr, "  -l INT       min read/fragment length to output [%d]\n", g.opt.min_seq_len);
 		fprintf(stderr, "  -o INT       min overlap length [%d]\n", g.opt.min_ovlp_len);
-		fprintf(stderr, "  -p STR       output PE reads to STR.R[12].fq.gz [stdout]\n");
+		fprintf(stderr, "  -p STR       output PE reads to STR.R[12].fq.gz (overriding -P) [discard pe]\n");
 		fprintf(stderr, "  -T INT       trim INT-bp [%d]\n", g.opt.trim_len);
+		fprintf(stderr, "  -P           output paired reads also to stdout [discard pe]\n");
 		fprintf(stderr, "  -d           tabular output for debugging\n");
 		return 1;
 	}
@@ -688,6 +691,7 @@ int main(int argc, char *argv[])
 			ksprintf(&str, "%s.R%d.fq.gz", pe_prefix, c+1);
 			g.fp_pe[c] = gzopen(str.s, "w1");
 		}
+		g.opt.retain_pe = 0;
 	}
 
 	kt_pipeline(2, worker_pipeline, &g, 3);
