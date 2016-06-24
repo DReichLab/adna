@@ -1,7 +1,7 @@
 aDNA is a set of tools to process ancient DNA data, in particular data produced
 with the [ReichLab protocol][udg].
 
-As of now, aDNA consists of two tool, **adna-trim** and **adna-ldup**.
+As of now, aDNA consists of two tools, **adna-trim** and **adna-ldup**.
 **adna-trim** efficiently trims sequencing adapters, checks inline barcodes and
 merges overlapping ends, all in one go. The typical command line to invoke
 adna-trim is:
