@@ -1,0 +1,93 @@
+#!/usr/bin/env perl
+
+# The MIT License
+# 
+# Copyright (c) 2016 Broad Institute
+# 
+# Permission is hereby granted, free of charge, to any person obtaining
+# a copy of this software and associated documentation files (the
+# "Software"), to deal in the Software without restriction, including
+# without limitation the rights to use, copy, modify, merge, publish,
+# distribute, sublicense, and/or sell copies of the Software, and to
+# permit persons to whom the Software is furnished to do so, subject to
+# the following conditions:
+# 
+# The above copyright notice and this permission notice shall be
+# included in all copies or substantial portions of the Software.
+# 
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+# EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+# MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+# NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+# BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+# ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+# CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+use strict;
+use warnings;
+use Getopt::Std;
+
+# command lines and options
+my %opts = ();
+getopts("b:t:p:", \%opts);
+
+die("Usage: run-adna [options] <ref.fa> <input>
+Options:
+  -p STR       output prefix [auto]
+  -t INT       number of threads [1]
+  -b FILE      barcode file [no barcode]
+") if @ARGV < 2;
+
+# check path
+my $exepath = $0 =~/^\S+\/[^\/\s]+/? $0 : &which($0);
+my $root = $0 =~/^(\S+)\/[^\/\s]+/? $1 : undef;
+$root = $exepath =~/^(\S+)\/[^\/\s]+/? $1 : undef if !defined($root);
+die "ERROR: failed to locate the root directory\n" if !defined($root);
+
+my @cmd;
+
+my $ref = $ARGV[0];
+my $opt_b = defined($opts{b})? "-b $opts{b}" : "";
+my $opt_t = defined($opts{t})? "-t $opts{t}" : "";
+my $prefix = defined($opts{p})? $opts{p} : undef;
+if (!defined($prefix) && -f $ARGV[1] && $ARGV[1] =~ /\.(bam|fq|fastq|fq\.gz|fastq\.gz)$/) {
+	$prefix = $ARGV[1];
+	$prefix =~ s/\.(bam|fq|fastq|fq\.gz|fastq\.gz)$//;
+}
+die "ERROR: failed to infer PREFIX\n" unless defined($prefix);
+
+my $in_fmt = 'bam';
+
+if ($in_fmt eq 'bam') {
+	if (-f $ARGV[1]) {
+		push(@cmd, qq{$root/htsbox bam2fq $ARGV[1] | $root/adna-trim $opt_b -p $prefix - 2> $prefix.trim.log | gzip -1 > $prefix.se.fq.gz});
+	} else {
+		push(@cmd, qq{$ARGV[1] | $root/htsbox bam2fq - | $root/adna-trim $opt_b -p $prefix - 2> $prefix.trim.log | gzip -1 > $prefix.se.fq.gz});
+	}
+} else { # not implemented yet
+	die;
+}
+
+push(@cmd, qq{$root/bwa aln $opt_t $ref $prefix.se.fq.gz > $prefix.se.sai 2> $prefix.se.sai.log});
+push(@cmd, qq{$root/bwa samse $ref $prefix.se.sai $prefix.se.fq.gz 2> $prefix.se.sam.log | gzip -1 > $prefix.se.sam.gz; rm $prefix.se.sai $prefix.se.fq.gz});
+push(@cmd, qq{$root/bwa aln $opt_t $ref $prefix.R1.fq.gz > $prefix.R1.sai 2> $prefix.R1.sai.log});
+push(@cmd, qq{$root/bwa aln $opt_t $ref $prefix.R2.fq.gz > $prefix.R2.sai 2> $prefix.R2.sai.log});
+push(@cmd, qq{$root/bwa sampe -Ps $ref $prefix.R1.sai $prefix.R2.sai $prefix.R1.fq.gz $prefix.R2.fq.gz 2> $prefix.pe.sam.log | gzip -1 > $prefix.pe.sam.gz; rm $prefix.R?.sai $prefix.R?.fq.gz});
+push(@cmd, qq{$root/htsbox samview -Sl0 $prefix.se.sam.gz | $root/sambamba sort --tmpdir=tmpsrt $opt_t -m 2G -o $prefix.se-dup.bam /dev/stdin; rm $prefix.se.sam.gz});
+push(@cmd, qq{$root/htsbox samview -Sl0 $prefix.pe.sam.gz | $root/sambamba sort --tmpdir=tmpsrt $opt_t -m 2G -o $prefix.pe-dup.bam /dev/stdin; rm $prefix.pe.sam.gz});
+push(@cmd, qq{$root/samtools merge -u - $prefix.se-dup.bam $prefix.pe-dup.bam | $root/adna-ldup - > $prefix.dup.bam 2> $prefix.dup.log; rm $prefix.se-dup.bam* $prefix.pe-dup.bam*});
+push(@cmd, qq{$root/htsbox bamidx $prefix.dup.bam});
+
+print join("\n", @cmd), "\n";
+
+sub which {
+	my $file = shift;
+	my $path = (@_)? shift : $ENV{PATH};
+	return if (!defined($path));
+	foreach my $x (split(":", $path)) {
+		$x =~ s/\/$//;
+		return "$x/$file" if (-x "$x/$file");
+	}
+	return;
+}
