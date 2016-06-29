@@ -330,18 +330,21 @@ ad_barcode_t *ad_bc_read(const char *fn)
 	ks = ks_init(fp);
 	kv_init(x[0]); kv_init(x[1]);
 	len[0] = len[1] = 0;
-	while (ks_getuntil(ks, KS_SEP_LINE, &s, &dret) >= 0) {
-		int w;
-		for (i = 0; s.s[i]; ++i)
-			if (isspace(s.s[i])) break;
-		if (s.s[i] == 0 || s.s[i+1] == 0) continue;
-		if (s.s[i+1] == '1') w = 0;
-		else if (s.s[i+1] == '2') w = 1;
-		else continue;
-		s.s[i] = 0;
-		if (len[w] == 0) len[w] = i;
-		else if (len[w] != i) continue;
-		kv_push(cstr_t, x[w], strdup(s.s));
+	for (i = 0; i < 2; ++i) {
+		int j, j0;
+		if (ks_getuntil(ks, KS_SEP_LINE, &s, &dret) < 0) break;
+		for (j = j0 = 0; j <= s.l; ++j) {
+			if (j == s.l || ispunct(s.s[j])) {
+				s.s[j] = 0;
+				if (len[i] == 0) len[i] = j - j0;
+				else if (len[i] != j - j0) {
+					j0 = j + 1;
+					continue;
+				}
+				if (len[i] > 0) kv_push(cstr_t, x[i], strdup(&s.s[j0]));
+				j0 = j + 1;
+			}
+		}
 	}
 	free(s.s);
 	ks_destroy(ks);
