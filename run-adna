@@ -30,20 +30,66 @@ use Getopt::Std;
 
 # command lines and options
 my %opts = ();
-getopts("b:t:p:", \%opts);
+getopts("b:t:p:PL", \%opts);
 
 die("Usage: run-adna [options] <ref.fa> <input>
 Options:
   -p STR       output prefix [auto]
   -t INT       number of threads [1]
   -b FILE      barcode file [no barcode]
-") if @ARGV < 2;
+  -P           paired-end mode
+") if (@ARGV < 2 && !defined($opts{L}));
 
 # check path
 my $exepath = $0 =~/^\S+\/[^\/\s]+/? $0 : &which($0);
 my $root = $0 =~/^(\S+)\/[^\/\s]+/? $1 : undef;
 $root = $exepath =~/^(\S+)\/[^\/\s]+/? $1 : undef if !defined($root);
 die "ERROR: failed to locate the root directory\n" if !defined($root);
+
+# parse logs
+if (defined $opts{L}) {
+	my $prefix = $opts{p};
+	if (-f "$prefix.trim.log") {
+		open(FH, "$prefix.trim.log");
+		my %cnt;
+		my $tot = 0;
+		while (<FH>) {
+			if (/::main.*\s+(\d+)\s+(\d+)$/) {
+				$tot += $2;
+				$cnt{$1} = $2;
+			}
+		}
+		close(FH);
+		printf("%16d (%5.2f%%)  merged single-end fragments\n", $cnt{21}+$cnt{22}, 100. * ($cnt{21}+$cnt{22}) / $tot);
+		printf("%16d (%5.2f%%)  paired-end fragments\n", $cnt{31}+$cnt{32}, 100. * ($cnt{31}+$cnt{32}) / $tot);
+		printf("%16d (%5.2f%%)  fragments without barcodes\n", $cnt{11}, 100. * $cnt{11} / $tot);
+		printf("%16d (%5.2f%%)  short fragments\n", $cnt{12} + $cnt{13}, 100. * ($cnt{12} + $cnt{13}) / $tot);
+	}
+	if (-f "$prefix.final.bam" && -f "$prefix.final.bam.bai") {
+		open(FH, "$root/samtools idxstats $prefix.final.bam |") || die;
+		my ($n_mapped, $n_un) = (0, 0);
+		while (<FH>) {
+			chomp;
+			my @t = split("\t");
+			$n_mapped += $t[2];
+			$n_un += $t[3];
+		}
+		close(FH);
+		print "\n";
+		printf("%16d (%5.2f%%)  reads mapped\n", $n_mapped, 100. * $n_mapped / ($n_mapped + $n_un));
+	}
+	if (-f "$prefix.dup.log") {
+		open(FH, "$prefix.dup.log");
+		while (<FH>) {
+			if (/::main.*\s+(\d+)\+(\d+).*\s(\d+)\+(\d+)/) {
+				printf("\n%16d (%5.2f%%)  unique single-end fragments\n", $1-$3, 100. * ($1-$3) / $1);
+				printf("\n%16d (%5.2f%%)  unique paired-end fragments\n", $2-$4, 100. * ($2-$4) / $2) if $2 > 0;
+			}
+		}
+		close(FH);
+	}
+	exit;
+}
 
 my @cmd;
 
@@ -71,13 +117,20 @@ if ($in_fmt eq 'bam') {
 
 push(@cmd, qq{$root/bwa aln $opt_t $ref $prefix.se.fq.gz > $prefix.se.sai 2> $prefix.se.sai.log});
 push(@cmd, qq{$root/bwa samse $ref $prefix.se.sai $prefix.se.fq.gz 2> $prefix.se.sam.log | gzip -1 > $prefix.se.sam.gz; rm $prefix.se.sai $prefix.se.fq.gz});
-push(@cmd, qq{$root/bwa aln $opt_t $ref $prefix.R1.fq.gz > $prefix.R1.sai 2> $prefix.R1.sai.log});
-push(@cmd, qq{$root/bwa aln $opt_t $ref $prefix.R2.fq.gz > $prefix.R2.sai 2> $prefix.R2.sai.log});
-push(@cmd, qq{$root/bwa sampe -Ps $ref $prefix.R1.sai $prefix.R2.sai $prefix.R1.fq.gz $prefix.R2.fq.gz 2> $prefix.pe.sam.log | gzip -1 > $prefix.pe.sam.gz; rm $prefix.R?.sai $prefix.R?.fq.gz});
 push(@cmd, qq{$root/htsbox samview -Sl0 $prefix.se.sam.gz | $root/sambamba sort --tmpdir=tmpsrt $opt_t -m 2G -o $prefix.se-dup.bam /dev/stdin; rm $prefix.se.sam.gz});
-push(@cmd, qq{$root/htsbox samview -Sl0 $prefix.pe.sam.gz | $root/sambamba sort --tmpdir=tmpsrt $opt_t -m 2G -o $prefix.pe-dup.bam /dev/stdin; rm $prefix.pe.sam.gz});
-push(@cmd, qq{$root/samtools merge -u - $prefix.se-dup.bam $prefix.pe-dup.bam | $root/adna-ldup - > $prefix.dup.bam 2> $prefix.dup.log; rm $prefix.se-dup.bam* $prefix.pe-dup.bam*});
-push(@cmd, qq{$root/htsbox bamidx $prefix.dup.bam});
+if (defined $opts{P}) {
+	push(@cmd, qq{$root/bwa aln $opt_t $ref $prefix.R1.fq.gz > $prefix.R1.sai 2> $prefix.R1.sai.log});
+	push(@cmd, qq{$root/bwa aln $opt_t $ref $prefix.R2.fq.gz > $prefix.R2.sai 2> $prefix.R2.sai.log});
+	push(@cmd, qq{$root/bwa sampe -Ps $ref $prefix.R1.sai $prefix.R2.sai $prefix.R1.fq.gz $prefix.R2.fq.gz 2> $prefix.pe.sam.log | gzip -1 > $prefix.pe.sam.gz; rm $prefix.R?.sai $prefix.R?.fq.gz});
+	push(@cmd, qq{$root/htsbox samview -Sl0 $prefix.pe.sam.gz | $root/sambamba sort --tmpdir=tmpsrt $opt_t -m 2G -o $prefix.pe-dup.bam /dev/stdin; rm $prefix.pe.sam.gz});
+	push(@cmd, qq{$root/samtools merge -u - $prefix.se-dup.bam $prefix.pe-dup.bam | $root/adna-ldup - > $prefix.final.bam 2> $prefix.dup.log; rm $prefix.se-dup.bam* $prefix.pe-dup.bam*});
+} else {
+	push(@cmd, qq{$root/adna-ldup $prefix.se-dup.bam > $prefix.final.bam 2> $prefix.dup.log; rm $prefix.se-dup.bam*});
+}
+push(@cmd, qq{rm -fr tmpsrt});
+push(@cmd, qq{$root/htsbox bamidx $prefix.final.bam});
+push(@cmd, qq{$root/run-adna -Lp $prefix > $prefix.final.stat});
+push(@cmd, qq{tar -zcf $prefix.log.tgz $prefix.*.log; rm $prefix.*.log});
 
 print join("\n", @cmd), "\n";
 
