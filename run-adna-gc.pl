@@ -43,9 +43,9 @@ system(qq/gcloud compute instances create $machine --zone $opts{Z} --boot-disk-t
 open(FH, qq/| gcloud compute ssh $machine --zone $opts{Z} --command "cat > run.sh"/) || die;
 print FH qq(mkdir -p lh3dev && sudo mount -o discard,defaults,ro /dev/sdb lh3dev
 sudo apt-get update && sudo apt-get -q -y install perl
-gsutil cp $ARGV[1] $prefix.bc
+gsutil -u $opts{P} cp $ARGV[1] $prefix.bc
 lh3dev/adna.kit/run-adna -b $prefix.bc -t $n_threads -p $prefix lh3dev/bwadb/hs37d5.fa "gsutil cp $ARGV[0] -" | sh
-gsutil cp $prefix.* $ARGV[2]
+gsutil -u $opts{P} cp $prefix.* $ARGV[2]
 );
 close(FH);
 system(qq/gcloud compute ssh $machine --zone $opts{Z} --command "sh run.sh"/);
