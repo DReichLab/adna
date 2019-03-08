@@ -107,9 +107,9 @@ my $in_fmt = 'bam';
 
 if ($in_fmt eq 'bam') {
 	if (-f $ARGV[1]) {
-		push(@cmd, qq{$root/samtools view -F512 $ARGV[1] | $root/htsbox bam2fq - | $root/adna-trim $opt_b -p $prefix - 2> $prefix.trim.log | gzip -1 > $prefix.se.fq.gz});
+		push(@cmd, qq{$root/samtools view -uF512 $ARGV[1] | $root/htsbox bam2fq - | $root/adna-trim $opt_b -p $prefix - 2> $prefix.trim.log | gzip -1 > $prefix.se.fq.gz});
 	} else {
-		push(@cmd, qq{$ARGV[1] | $root/samtools view -F512 - | $root/htsbox bam2fq - | $root/adna-trim $opt_b -p $prefix - 2> $prefix.trim.log | gzip -1 > $prefix.se.fq.gz});
+		push(@cmd, qq{$ARGV[1] | $root/samtools view -uF512 - | $root/htsbox bam2fq - | $root/adna-trim $opt_b -p $prefix - 2> $prefix.trim.log | gzip -1 > $prefix.se.fq.gz});
 	}
 } else { # not implemented yet
 	die;
