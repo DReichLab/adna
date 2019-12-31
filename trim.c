@@ -68,23 +68,33 @@ typedef struct {
 	lt_seqcloud1_t *mm;
 } lt_seqcloud_t;
 
+#define KMER_LETTER_NUM_VALUES 5
+#define KMER_LETTER_BITWIDTH 3
+
+/* A, a -> 0
+ * C, c -> 1
+ * G, g -> 2
+ * T, t -> 3
+ * N, n -> 4
+ * all others -> 5
+ */
 unsigned char seq_nt4_table[256] = {
-	4, 4, 4, 4,  4, 4, 4, 4,  4, 4, 4, 4,  4, 4, 4, 4, 
-	4, 4, 4, 4,  4, 4, 4, 4,  4, 4, 4, 4,  4, 4, 4, 4, 
-	4, 4, 4, 4,  4, 4, 4, 4,  4, 4, 4, 4,  4, 4 /*'-'*/, 4, 4,
-	4, 4, 4, 4,  4, 4, 4, 4,  4, 4, 4, 4,  4, 4, 4, 4, 
-	4, 0, 4, 1,  4, 4, 4, 2,  4, 4, 4, 4,  4, 4, 4, 4, 
-	4, 4, 4, 4,  3, 4, 4, 4,  4, 4, 4, 4,  4, 4, 4, 4, 
-	4, 0, 4, 1,  4, 4, 4, 2,  4, 4, 4, 4,  4, 4, 4, 4, 
-	4, 4, 4, 4,  3, 4, 4, 4,  4, 4, 4, 4,  4, 4, 4, 4, 
-	4, 4, 4, 4,  4, 4, 4, 4,  4, 4, 4, 4,  4, 4, 4, 4, 
-	4, 4, 4, 4,  4, 4, 4, 4,  4, 4, 4, 4,  4, 4, 4, 4, 
-	4, 4, 4, 4,  4, 4, 4, 4,  4, 4, 4, 4,  4, 4, 4, 4, 
-	4, 4, 4, 4,  4, 4, 4, 4,  4, 4, 4, 4,  4, 4, 4, 4, 
-	4, 4, 4, 4,  4, 4, 4, 4,  4, 4, 4, 4,  4, 4, 4, 4, 
-	4, 4, 4, 4,  4, 4, 4, 4,  4, 4, 4, 4,  4, 4, 4, 4, 
-	4, 4, 4, 4,  4, 4, 4, 4,  4, 4, 4, 4,  4, 4, 4, 4, 
-	4, 4, 4, 4,  4, 4, 4, 4,  4, 4, 4, 4,  4, 4, 4, 4
+	5, 5, 5, 5,  5, 5, 5, 5,  5, 5, 5, 5,  5, 5, 5, 5, 
+	5, 5, 5, 5,  5, 5, 5, 5,  5, 5, 5, 5,  5, 5, 5, 5, 
+	5, 5, 5, 5,  5, 5, 5, 5,  5, 5, 5, 5,  5, 5 /*'-'*/, 5, 5,
+	5, 5, 5, 5,  5, 5, 5, 5,  5, 5, 5, 5,  5, 5, 5, 5, 
+	5, 0, 5, 1,  5, 5, 5, 2,  5, 5, 5, 5,  5, 5, 4, 5, 
+	5, 5, 5, 5,  3, 5, 5, 5,  5, 5, 5, 5,  5, 5, 5, 5, 
+	5, 0, 5, 1,  5, 5, 5, 2,  5, 5, 5, 5,  5, 5, 4, 5, 
+	5, 5, 5, 5,  3, 5, 5, 5,  5, 5, 5, 5,  5, 5, 5, 5, 
+	5, 5, 5, 5,  5, 5, 5, 5,  5, 5, 5, 5,  5, 5, 5, 5, 
+	5, 5, 5, 5,  5, 5, 5, 5,  5, 5, 5, 5,  5, 5, 5, 5, 
+	5, 5, 5, 5,  5, 5, 5, 5,  5, 5, 5, 5,  5, 5, 5, 5, 
+	5, 5, 5, 5,  5, 5, 5, 5,  5, 5, 5, 5,  5, 5, 5, 5, 
+	5, 5, 5, 5,  5, 5, 5, 5,  5, 5, 5, 5,  5, 5, 5, 5, 
+	5, 5, 5, 5,  5, 5, 5, 5,  5, 5, 5, 5,  5, 5, 5, 5, 
+	5, 5, 5, 5,  5, 5, 5, 5,  5, 5, 5, 5,  5, 5, 5, 5, 
+	5, 5, 5, 5,  5, 5, 5, 5,  5, 5, 5, 5,  5, 5, 5, 5
 };
 
 static lt_seqcloud_t *lt_sc_init(void)
@@ -104,11 +114,13 @@ void lt_sc_destroy(lt_seqcloud_t *sc)
 void lt_sc_add_core(lt_seqcloud_t *sc, uint64_t s)
 {
 	int i, absent;
-	sc->s = s = s & ((1ULL<<sc->l*2) - 1);
+	sc->s = s = s & ((1ULL<<sc->l * KMER_LETTER_BITWIDTH) - 1);
 	for (i = 0; i < sc->l; ++i) {
-		int i2 = i * 2, a, c = s>>i2&3;
-		for (a = 1; a < 4; ++a) {
-			uint64_t x = (s & ~(3ULL << i2)) | (uint64_t)((a+c)&3) << i2;
+		int i2 = i * KMER_LETTER_BITWIDTH;
+		int c = (s >> i2) & 7;
+		int a;
+		for (a = 1; a < KMER_LETTER_NUM_VALUES; ++a) {
+			uint64_t x = (s & ~(7ULL << i2)) | (uint64_t)((a+c) % KMER_LETTER_NUM_VALUES) << i2;
 			kh_put(s64, sc->mm, x, &absent);
 		}
 	}
@@ -123,11 +135,11 @@ lt_seqcloud_t *lt_sc_gen(const char *s)
 	sc->l = strlen(s);
 	for (i = 0; s[i] && i < sc->l; ++i) {
 		int c = seq_nt4_table[(uint8_t)s[i]];
-		if (c > 3) {
+		if (c >= KMER_LETTER_NUM_VALUES) {
 			lt_sc_destroy(sc);
 			return 0;
 		}
-		x = x << 2 | c;
+		x = x << KMER_LETTER_BITWIDTH | c;
 	}
 	lt_sc_add_core(sc, x);
 	return sc;
@@ -140,11 +152,11 @@ typedef struct {
 int lt_sc_test(const lt_seqcloud_t *sc, const char *seq, int max_hits, lt_sc_hit_t *hits)
 {
 	int i, l, n = 0;
-	uint64_t x = 0, mask = (1ULL << sc->l*2) - 1;
+	uint64_t x = 0, mask = (1ULL << sc->l * KMER_LETTER_BITWIDTH) - 1;
 	for (i = l = 0; seq[i]; ++i) {
 		int c = seq_nt4_table[(uint8_t)seq[i]];
-		if (c < 4) {
-			x = (x << 2 | c) & mask;
+		if (c < KMER_LETTER_NUM_VALUES) {
+			x = (x << KMER_LETTER_BITWIDTH | c) & mask;
 			if (++l >= sc->l) {
 				if (x == sc->s || kh_get(s64, sc->mm, x) != kh_end(sc->mm)) {
 					hits[n].pos = i - (sc->l - 1);
